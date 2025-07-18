@@ -2,10 +2,31 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'dart:io';
 import 'package:window_size/window_size.dart';
+import 'package:fl_chart/fl_chart.dart';
 
-void main() {
+// Data class for chart points
+class CounterPoint {
+  final DateTime timestamp;
+  final int value;
+  
+  CounterPoint({required this.timestamp, required this.value});
+  
+  Map<String, dynamic> toJson() => {
+    'timestamp': timestamp.millisecondsSinceEpoch,
+    'value': value,
+  };
+  
+  factory CounterPoint.fromJson(Map<String, dynamic> json) => CounterPoint(
+    timestamp: DateTime.fromMillisecondsSinceEpoch(json['timestamp']),
+    value: json['value'],
+  );
+}
+
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  Hive.initFlutter();
+  await Hive.initFlutter();
+  await Hive.openBox('highscoreBox');
   if (Platform.isWindows) {
     // setWindowMinSize(const Size(1080, 2400));
     // setWindowMaxSize(const Size(1080, 2400));
@@ -84,14 +105,20 @@ class _MyHomePageState extends State<MyHomePage> {
   int _highScore = 0;
   DateTime? _lastXpUpdate;
   Box? _box;
+  List<CounterPoint> _counterHistory = [];
 
   void _incrementCounter() async {
     setState(() {
       _counter += _incrementValue;
+      _counterHistory.add(CounterPoint(
+        timestamp: DateTime.now(),
+        value: _counter,
+      ));
       if (_counter > _highScore) {
         _highScore = _counter;
         _saveHighScore();
       }
+      _saveCounterHistory();
     });
   }
 
@@ -131,8 +158,9 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _initHive() async {
-    _box = await Hive.openBox('highscoreBox');
+    _box = Hive.box('highscoreBox');
     _loadHighScore();
+    _loadCounterHistory();
   }
 
   void _startXpTimer() {
@@ -155,6 +183,26 @@ class _MyHomePageState extends State<MyHomePage> {
   void _saveHighScore() async {
     if (_box != null) {
       await _box!.put('highScore', _highScore);
+    }
+  }
+
+  void _saveCounterHistory() async {
+    if (_box != null) {
+      final historyJson = _counterHistory.map((point) => point.toJson()).toList();
+      await _box!.put('counterHistory', historyJson);
+    }
+  }
+
+  void _loadCounterHistory() async {
+    if (_box != null) {
+      final historyJson = _box!.get('counterHistory', defaultValue: <dynamic>[]);
+      if (historyJson is List) {
+        setState(() {
+          _counterHistory = historyJson
+              .map<CounterPoint>((json) => CounterPoint.fromJson(Map<String, dynamic>.from(json)))
+              .toList();
+        });
+      }
     }
   }
 
@@ -199,9 +247,82 @@ class _MyHomePageState extends State<MyHomePage> {
               style: Theme.of(context).textTheme.bodyMedium,
             ),
             const SizedBox(height: 24),
+            // Counter Chart
+            Container(
+              height: 200,
+              padding: const EdgeInsets.all(16),
+              child: _counterHistory.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'No counter data yet.\nStart clicking to see your progress!',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    )
+                  : LineChart(
+                      LineChartData(
+                        gridData: const FlGridData(show: true),
+                        titlesData: FlTitlesData(
+                          bottomTitles: AxisTitles(
+                            sideTitles: SideTitles(
+                              showTitles: true,
+                              getTitlesWidget: (value, meta) {
+                                if (_counterHistory.isEmpty) return const Text('');
+                                final index = value.toInt();
+                                if (index >= 0 && index < _counterHistory.length) {
+                                  final point = _counterHistory[index];
+                                  return Text(
+                                    '${point.timestamp.hour}:${point.timestamp.minute.toString().padLeft(2, '0')}',
+                                    style: const TextStyle(fontSize: 10),
+                                  );
+                                }
+                                return const Text('');
+                              },
+                              reservedSize: 22,
+                            ),
+                          ),
+                          rightTitles: const AxisTitles(
+                            sideTitles: SideTitles(showTitles: false),
+                          ),
+                          topTitles: const AxisTitles(
+                            sideTitles: SideTitles(showTitles: false),
+                          ),
+                          leftTitles: AxisTitles(
+                            sideTitles: SideTitles(
+                              showTitles: true,
+                              getTitlesWidget: (value, meta) {
+                                return Text(
+                                  value.toInt().toString(),
+                                  style: const TextStyle(fontSize: 10),
+                                );
+                              },
+                              reservedSize: 40,
+                            ),
+                          ),
+                        ),
+                        borderData: FlBorderData(show: true),
+                        lineBarsData: [
+                          LineChartBarData(
+                            spots: _counterHistory.asMap().entries.map((entry) {
+                              return FlSpot(entry.key.toDouble(), entry.value.value.toDouble());
+                            }).toList(),
+                            isCurved: true,
+                            color: Colors.teal.shade700,
+                            barWidth: 3,
+                            dotData: const FlDotData(show: false),
+                            belowBarData: BarAreaData(
+                              show: true,
+                              color: Colors.teal.shade700.withOpacity(0.3),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+            ),
+            const SizedBox(height: 24),
             ElevatedButton(
               onPressed: _upgradeIncrement,
-              child: const Text('Upgrade'),
+              child: const Text('Upgrade Power Level'),
             ),
             const SizedBox(height: 12),
             ElevatedButton(
@@ -221,6 +342,16 @@ class _MyHomePageState extends State<MyHomePage> {
                 );
               },
               child: const Text('Show Power Level'),
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton(
+              onPressed: () {
+                setState(() {
+                  _counterHistory.clear();
+                });
+                _saveCounterHistory();
+              },
+              child: const Text('Clear Chart History'),
             ),
           ],
         ),
